@@ -1,32 +1,40 @@
 # -*- perl -*-
 #	midistream.t : test MIDI::Stream
 #
-#	Copyright (c) 2002 Hiroo Hayashi.  All rights reserved.
+#	Copyright (c) 2003 Hiroo Hayashi.  All rights reserved.
 #		hiroo.hayashi@computer.org
 #
 #	This program is free software; you can redistribute it and/or
 #	modify it under the same terms as Perl itself.
+#
+#	$Id: midistream.t,v 1.5 2003-03-30 13:06:24-05 hiroo Exp $
 
 use strict;
 use Test;
-BEGIN { plan tests => 8 };
+use vars qw($ntest);
+BEGIN { $ntest = 9; plan tests => $ntest; };
 use Win32API::MIDI qw( /^(MEVT_)/ );
 #use Data::Dumper;
-my $i = 0;
-ok(++$i); # If we made it this far, we're ok.
+ok(1); # If we made it this far, we're ok.
 
 my $midi = new Win32API::MIDI;
-ok(++$i);
+ok(1);
+
+if ($midi->OutGetNumDevs() == 0){
+    skip('need MIDI Output device', 'skipping t/midiout.t') for (1..$ntest-3);
+    exit 0;
+}
+ok(1);
 
 my $ms = new Win32API::MIDI::Stream()	or die $midi->OutGetErrorText();
-ok(++$i);
+ok(1);
 
 # borrowed from Stream.c
 my $buf = pack('L*',
 	       # System Exclusive (set master volume full)
 	       0,  0, (&MEVT_LONGMSG << 24) | 8, 0x047F7FF0, 0xF77F7F01,
-	       # set tempo (0x50000 microsecond per quarter note)
-	       0,  0, (&MEVT_TEMPO<<24) | 0x00050000,
+	       # set tempo (0x20000 microsecond per quarter note)
+	       0,  0, (&MEVT_TEMPO<<24) | 0x00020000,
 	       # short messages
 	       0,  0, 0x007F3C90,
 	       48, 0, 0x00003C90,
@@ -74,11 +82,11 @@ my $midihdr = pack ("PLLLLPLL",
 		    0);		# dwOffset
 my $lpMidiHdr = unpack('L!', pack('P', $midihdr));
 
-$ms->PrepareHeader($lpMidiHdr)		or die $ms->GetErrorText(); ok(++$i);
-$ms->Out($lpMidiHdr)			or die $ms->GetErrorText(); ok(++$i);
-$ms->Restart()				or die $ms->GetErrorText(); ok(++$i);
-sleep(12);
-$ms->UnprepareHeader($lpMidiHdr)	or die $ms->GetErrorText(); ok(++$i);
-$ms->Close()				or die $ms->GetErrorText(); ok(++$i);
+$ms->PrepareHeader($lpMidiHdr)		or die $ms->GetErrorText(); ok(1);
+$ms->Out($lpMidiHdr)			or die $ms->GetErrorText(); ok(1);
+$ms->Restart()				or die $ms->GetErrorText(); ok(1);
+sleep(5);
+$ms->UnprepareHeader($lpMidiHdr)	or die $ms->GetErrorText(); ok(1);
+$ms->Close()				or die $ms->GetErrorText(); ok(1);
 
 exit;

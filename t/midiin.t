@@ -1,34 +1,66 @@
 # -*- perl -*-
 #	midiin.t : test Win32API::MIDI::In
 #
-#	Copyright (c) 2002 Hiroo Hayashi.  All rights reserved.
+#	Copyright (c) 2003 Hiroo Hayashi.  All rights reserved.
 #		hiroo.hayashi@computer.org
 #
 #	This program is free software; you can redistribute it and/or
 #	modify it under the same terms as Perl itself.
 #
+#	$Id: midiin.t,v 1.8 2003-04-13 22:44:22-05 hiroo Exp $
+
+=pod
+
+This test sends Identity Request message (GS request level message if
+`-g' option is applied) to a MIDI device and waits for reply for one
+second and show the data received.
+
+eg/midisysexin.pl and eg/td6 demonstrates dual buffering method to
+receive large bulk dump data and event driven method using Tie::Watch
+distrubuted with Perl/Tk.
+
+=cut
+
 use strict;
-use Test;
-BEGIN { plan tests => 11 };
-use Win32API::MIDI qw( /^(MIM_)/ );
+use vars qw($ntest $opt_i $opt_g);
+use Getopt::Std;
 use Data::Dumper;
-my $i = 0;
-ok(++$i); # If we made it this far, we're ok.
+use Test;
+BEGIN { $ntest = 18; plan tests => $ntest; };
+
+use Win32API::MIDI qw( /^(MIM_)/ );
+ok(1); # If we made it this far, we're ok.
 
 my $midi = new Win32API::MIDI;
-ok(++$i);
+ok(1);
 
-# subroutines
-sub unpack3 {
-    return (($_[0] >> 16) & 0xff, ($_[0] >> 8) & 0xff, $_[0] & 0xff);
+use Win32API::MIDI::Out;
+ok(1);
+
+use Win32API::MIDI::SysEX;
+use Win32API::MIDI::SysEX::Roland;
+ok(1);
+
+getopts('ig');
+
+if (!$opt_i && ! -f 't/devinfo') {
+    print STDERR "midiin.t: Try \`$^X -Mblib t/midiin.t -i\', if you have MIDI input device.\n";
+    skip('skip, run with -i option', 'skipping t/midiin.t') for (1..$ntest-4);
+    exit 0;
 }
-sub checkSum {
-    my $s = 0;
-    $s += $_ foreach (@_);
-    -$s & 0x7F;
+ok(1);
+
+if ($midi->InGetNumDevs() == 0){
+    skip('need MIDI Input device', 'skipping t/midiin.t') for (1..$ntest-3);
+    exit 0;
 }
-#my $d = checkSum(unpack3(0x40007f));
-#printf "0x%02x %d\n", $d, $d; exit;
+ok(1);
+
+if ($midi->OutGetNumDevs() == 0){
+    skip('need MIDI Output device', 'skipping t/midiin.t') for (1..$ntest-2);
+    exit 0;
+}
+ok(1);
 
 # for debug
 sub datadump {
@@ -37,114 +69,25 @@ sub datadump {
     foreach (unpack 'C*', $m) { printf "%02x ", $_; }; print ":length $l\n";
 }
 
-sub EXS { 0xf0; };		# Exclusive Status
-sub EOX { 0xf7; };		# EOX: End Of Exclusive
-sub UNM { 0x7e; };		# Universal Non-realtime Meesages
-sub URM { 0x7f; };		# Universal Realtime Messages
-sub BRD { 0x7f; };		# Broadcast Device ID
-
-my %sysex;
-$sysex{'Turn General MIDI System On'}
-    = pack 'C*', EXS, UNM, 0x7f, 0x09, 0x01, EOX;
-$sysex{'Turn General MIDI System Off'}
-    = pack 'C*', EXS, UNM, 0x7f, 0x09, 0x02, EOX;
-sub identifyRequest {
-    my $dev = shift; $dev--;
-    pack 'C*', EXS, UNM, ($dev & 0xff), 0x06, 0x01, EOX;
-}
-sub sysExMasterVolume {
-    pack('C*', EXS, URM, BRD,
-	 0x04,			# sub ID #1 : Device Control Message
-	 0x01,			# sub ID #2 : Master Volume
-	 $_[0] & 0xff,		# volume (LSB)
-	 ($_[0] >> 8) & 0xff,	# volume (MSB)
-	 EOX);
-}
-
-my %ID;
-$ID{Roland} = 0x41;		# manufacture ID : Roland
-# SC-55mkII
-sub RequestData_RQ1 {
-    my ($dev, $address, $size) = @_;
-    $dev--;
-    pack('C*', EXS, $ID{Roland},
-	 $dev,
-	 0x42,			# Model ID: for GS, 0x45 for SC-55, 155
-	 0x11,			# command ID: RQ1
-	 unpack3($address),	# address
-	 unpack3($size),
-	 checkSum(unpack3($address), unpack3($size)),
-	 EOX);
-}
-
-sub DataTransfer_DT1 {
-    my ($dev, $address, @data) = @_;
-    $dev--;
-    pack('C*', EXS, $ID{Roland},
-	 $dev,
-	 0x42,			# Model ID: for GS, 0x45 for SC-55, 155
-	 0x12,			# command ID: DT1
-	 unpack3($address),	# address
-	 @data,
-	 checkSum(unpack3($address), @data),
-	 EOX);
-}
-
-sub RequestData_RQ1_4B {
-    my ($dev, $address, $size) = @_;
-    $dev--;
-    pack('C6NNC2',
-	 EXS, $ID{Roland},
-	 $dev,
-	 0x00, 0x3f,		# Model ID: for TD-6
-	 0x11,			# command ID: RQ1
-	 $address,		# address
-	 $size,			# size
-	 checkSum(unpack 'C*', pack('NN', $address, $size)),
-	 EOX);
-}
-
-sub DataTransfer_DT1_4B {
-    my ($dev, $address, @data) = @_;
-    $dev--;
-    pack('C6NC*',
-	 EXS, $ID{Roland},
-	 $dev,
-	 0x00, 0x3f,		# Model ID: for TD-6
-	 0x12,			# command ID: DT1
-	 $address,		# address
-	 @data,
-	 checkSum(unpack('C*', pack('N', $address)), @data),
-	 EOX);
-}
-
-my $devId = 17;			# default device ID
-$sysex{'GS Reset'} = DataTransfer_DT1($devId, 0x40007f, 0x00);
+# set 1 to enable debug message in callback routine
+my $cb_debug = 0;
 
 ########################################################################
-# output SysEX Message
-sub Win32API::MIDI::Out::sysex {
-    my ($self, $m) = @_;
-    # struct midiHdr
-    my $midiHdr = pack ("PL4PL6",
-			$m,	# lpData
-			length $m, # dwBufferLength
-			0, 0, 0, undef, 0, 0);
-    # make pointer to struct midiHdr
-    # cf. perlpacktut in Perl 5.8.0 or later (http://www.perldoc.com/)
-    my $lpMidiOutHdr = unpack('L!', pack('P',$midiHdr));
-    $self->PrepareHeader($lpMidiOutHdr)	  or die $self->GetErrorText();
-    $self->LongMsg($lpMidiOutHdr)	  or die $self->GetErrorText();
-    $self->UnprepareHeader($lpMidiOutHdr) or die $self->GetErrorText();
-}
+midi_in_test(get_midi_dev_info($opt_i), $opt_g);
+exit 0;
 
+########################################################################
 sub midi_in_test {
+    my ($midev, $modev, $devid, $use_gs) = @_;
     print "MIDI::API::In\n";
-    my $mi = new Win32API::MIDI::In(0, \&midiincallback, 0x1234)
+    my $mi = new Win32API::MIDI::In($midev, \&midiincallback, 0x1234)
 	or die $midi->InGetErrorText();
-    ok(++$i);
+    ok(1);
 
     my $buf = "\0" x 1024;
+    # make a pointer to MIDIHDR data structure
+    # cf. perlpacktut in Perl 5.8.0 or later
+    #     (http://www.perldoc.com/)
     my $midihdr = pack ("PLLLLPLL",
 			$buf,	# lpData
 			length $buf, # dwBufferLength
@@ -155,51 +98,173 @@ sub midi_in_test {
 			0,	# reserved
 			0);	# dwOffset
     my $lpMidiInHdr = unpack('L!', pack('P', $midihdr));
-#    printf "lpMidiInHdr: 0x%08x\n", $lpMidiInHdr;
+    printf("lpMidiInHdr: 0x%08x, buf: 0x%08x\n",
+	   $lpMidiInHdr, unpack('L!', pack('P', $buf)));
 
-    $mi->PrepareHeader($lpMidiInHdr)	or die $mi->GetErrorText(); ok(++$i);
-    $mi->AddBuffer($lpMidiInHdr)	or die $mi->GetErrorText(); ok(++$i);
-    $mi->Start				or die $mi->GetErrorText(); ok(++$i);
+    $mi->PrepareHeader($lpMidiInHdr)	or die $mi->GetErrorText(); ok(1);
+    $mi->AddBuffer($lpMidiInHdr)	or die $mi->GetErrorText(); ok(1);
+    $mi->Start				or die $mi->GetErrorText(); ok(1);
 
-    my $mo = new Win32API::MIDI::Out(0)	or die $midi->OutGetErrorText();
-    ok(++$i);
+    my $mo = new Win32API::MIDI::Out($modev) or die $midi->OutGetErrorText();
+    ok(1);
 
-    #sc55mkII
-    #print "example 2 (manual P.104): Request the level for a drum note.\n";
-    $mo->sysex(RequestData_RQ1($devId, 0x41024b, 0x01));
-
+    my $se;
+    if ($use_gs) {		# for GS sound module
+	$se = new Win32API::MIDI::SysEX::Roland(deviceID => $devid);
+	print "Sending 'Request the level for a drum note'.\n";
+	datadump($se->RQ1(0x41024b, 0x01));
+	$mo->SysEX($se->RQ1(0x41024b, 0x01)) or die $mo->GetErrorText(); ok(1);
+    } else {			# use MIDI standard indentity request message
+	$se = new Win32API::MIDI::SysEX(deviceID => $devid);
+	# Indentity Request
+	print "Sending `Indentity Request' which old MIDI device may not support.\n";
+	datadump($se->identityRequest);
+	$mo->SysEX($se->identityRequest)	or die $mo->GetErrorText(); ok(1);
+    }
     print "Waiting...";
-    sleep 2;
+    sleep 1;
     print "done (sleep)\n";
-    $mo->Close				or die $mo->GetErrorText(); ok(++$i);
-    $mi->Reset				or die $mi->GetErrorText(); ok(++$i);
-    $mi->UnprepareHeader($lpMidiInHdr)	or die $mi->GetErrorText(); ok(++$i);
-    $mi->Close				or die $mi->GetErrorText(); ok(++$i);
-}
-midi_in_test; exit 0;
+    $mo->Close				or die $mo->GetErrorText(); ok(1);
+    $mi->Stop				or die $mi->GetErrorText(); ok(1);
+    $mi->Reset				or die $mi->GetErrorText(); ok(1);
+    $mi->UnprepareHeader($lpMidiInHdr)	or die $mi->GetErrorText(); ok(1);
+    $mi->Close				or die $mi->GetErrorText(); ok(1);
 
-#package Win32API::MIDI::In;
+    my $bytesrecorded = (unpack('LL4LL2', $midihdr))[2];
+    my $data = unpack("P$bytesrecorded", $midihdr);
+
+    datadump($data);
+    if ($use_gs) {
+	printf ("Returned data: %02x\n", (unpack('C*', $data))[8]);
+    } else {
+	my @d = $se->parseIdentityReply($data);
+	if (@d) {
+	    printf "device ID:\t\t\t%02x\n", $d[0];
+	    printf("manufactures ID:\t\t%06x\n", $d[1]);
+	    printf "manufacutre:\t\t\t%s\n", $se->manufacturer($d[1]);
+	    printf "device family code:\t\t%04x (%04x)\n",
+		$d[2], $se->conv7bto8b2B($d[2]);
+	    printf "device family member code:\t%04x (%04x)\n",
+		$d[3], $se->conv7bto8b2B($d[3]);
+	    printf "software revision:\t\t%08x (%08x)\n",
+		$d[4], $se->conv7bto8b4B($d[4]);
+	} else {
+	    print "No identity Reply\n";
+	}
+    }
+}
+
+# From MSDN:
+#	Applications should not call any system-defined functions from
+#	inside a callback function, except for EnterCriticalSection,
+#	LeaveCriticalSection, midiOutLongMsg, midiOutShortMsg,
+#	OutputDebugString, PostMessage, PostThreadMessage, SetEvent,
+#	timeGetSystemTime, timeGetTime, timeKillEvent, and
+#	timeSetEvent.
+
+# This means that we cannot use print() in the callback function.
+# But print() is still useful for initial debugging.
 sub midiincallback {
     my ($self, $msg, $instance, $param1, $param2) = @_;
-    printf "<<<0x%x,0x%x,0x%x,0x%x>>>\n", $msg, $instance, $param1, $param2;
+    printf "<<<0x%x,0x%x,0x%x,0x%x>>>\n", $msg, $instance, $param1, $param2
+	if $cb_debug;
     if ($msg == MIM_OPEN) {
-	print "MIM_OPEN\n";
+	print "MIM_OPEN\n" if $cb_debug;
     } elsif ($msg == MIM_CLOSE) {
-	print "MIM_CLOSE\n";
+	print "MIM_CLOSE\n" if $cb_debug;
     } elsif ($msg == MIM_ERROR) {
-	print "MIM_ERROR\n";
+	print "MIM_ERROR\n" if $cb_debug;
     } elsif ($msg == MIM_DATA) {
-	print "MIM_DATA\n";
+	print "MIM_DATA\n" if $cb_debug;
     } elsif ($msg == MIM_LONGDATA) {
-	print "MIM_LONGDATA\n";
+	print "MIM_LONGDATA\n" if $cb_debug;
 	my $midiHdr = unpack('P32', pack('L!', $param1));
 	my @d = unpack('LL4LL2', $midiHdr);
 	printf "lpData:%x,Buflen:%x,bytesrecorded:%d,dwUser:%x,dwFlags:%d\n",
-	    @d[0..4];
-	datadump(unpack("P$d[2]", $midiHdr));
+	    @d[0..4] if $cb_debug;
+	datadump(unpack("P$d[2]", $midiHdr)) if $cb_debug;
     } elsif ($msg == MIM_LONGERROR) {
-	print "MIM_LONGERROR\n";
+	print "MIM_LONGERROR\n" if $cb_debug;
     } else {
-	print "unknown message type\n";
+	print "unknown message type\n" if $cb_debug;
+    }
+}
+
+########################################################################
+# get_midi_dev_info
+# Returns
+#   $midev : MIDI Input Device (Port) Number
+#   $modev : MIDI Output Device (Port) Number
+#   $devid : MIDI Device ID
+sub get_midi_dev_info {
+    my $interactive = shift;
+    my ($midev, $modev, $devid);
+    # create 't/devinfo' if you run this script often.
+    if (!$interactive && -f 't/devinfo') {
+	my $midi = new Win32API::MIDI;
+	open(F, 't/devinfo') or die "cannot open 't/dev/info': $!\n";
+	chomp(my $iname = <F>);
+	chomp(my $oname = <F>);
+	chomp($devid = <F>);
+	close F;
+	$midev = $midi->InGetDevNum($iname);
+	$modev = $midi->OutGetDevNum($oname);
+    } else {
+	$midev = choose_midiin_dev();
+	$modev = choose_midiout_dev();
+	$devid = choose_device_id();
+    }
+    die "No MIDI In Device\n"  unless defined $midev;
+    die "No MIDI Out Device\n" unless defined $modev;
+    print "$midev, $modev, $devid\n";
+    return ($midev, $modev, $devid);
+}
+
+sub choose_midiin_dev {
+    my $midi = new Win32API::MIDI;
+    # MIDI In Devs
+    my $InNumDevs  = $midi->InGetNumDevs();
+    return undef if $InNumDevs < 0;
+    while (1) {
+	print STDERR "Choose MIDI Input Device.\n";
+	for (0..$InNumDevs-1) {
+	    my $c = $midi->InGetDevCaps($_)
+		or warn $midi->InGetErrorText(), "\n";
+	    printf STDERR "%2d: $c->{szPname}\n", $_;
+	}
+	print STDERR "[0]> ";
+	chomp($_ = <>);
+	return $_ if (0 <= $_ && $_ < $InNumDevs);
+	return 0 if $_ eq '';
+    }
+}
+
+sub choose_midiout_dev {
+    my $midi = new Win32API::MIDI;
+    # MIDI Out Devs
+    my $OutNumDevs  = $midi->OutGetNumDevs();
+    return undef if $OutNumDevs < 0;
+    while (1) {
+	print STDERR "Choose MIDI Output Device.\n";
+	for (-1..$OutNumDevs-1) {
+	    my $c = $midi->OutGetDevCaps($_)
+		or warn $midi->OutGetErrorText(), "\n";
+	    printf STDERR "%2d: $c->{szPname}\n", $_;
+	}
+	print STDERR "[-1]> ";
+	chomp($_ = <>);
+	return $_ if (-1 <= $_ && $_ < $OutNumDevs);
+	return -1 if $_ eq '';
+    }
+}
+
+sub choose_device_id {
+    while (1) {
+	print STDERR "Choose Device ID (see your MIDI device manual.) [1-256]\n";
+	print STDERR "[17]> ";
+	chomp($_ = <>);
+	return $_ if (1 <= $_ && $_ <= 256);
+	# Roland uses `17' for the default value.
+	return 17 if $_ eq '';
     }
 }

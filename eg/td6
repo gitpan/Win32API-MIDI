@@ -2,17 +2,30 @@
 #
 #	Roland TD6 Percussion Sound Module Controller
 #
-#	Copyright (c) 2002 Hiroo Hayashi.  All rights reserved.
+#	Copyright (c) 2003 Hiroo Hayashi.  All rights reserved.
 #		hiroo.hayashi@computer.org
 #
 #	This program is free software; you can redistribute it and/or
 #	modify it under the same terms as Perl itself.
+
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!NOTICE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# This program is under development adding MIDI input facility.  "td6"
+# in Win32API-MIDI-0.04.tar.gz is better than current one.
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!NOTICE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 # I developed Win32API::MIDI to make this program.
 # This program works but is still under development.
 #
 # TODO
 #	Utilize MIDI Input
+#		when init : read setup data
+#		default kits can be selected any time.
+#		drum kit library (file/kit) vs. drum kits in memory
+#		kit name must be uniq (-> filename)
+#		when drum kit is changed : read the kit data
+#		save/load kit data
+#		add button to synchronize all drum kit info (or Kit name only)
+#			only a list of kit name need to be managed.
 #		when a drum kit is choosed or default drum kit at init.
 #			load data in %db overiding the kit offset address
 #			call set_kit_parameters()
@@ -30,17 +43,17 @@
 require 5.004;
 use strict;
 use Data::Dumper;		# for debug
-my $ver = '$Id: td6,v 1.11 2002-10-12 23:56:54-05 hiroo Exp $';
+my $ver = '$Id: td6,v 1.15 2003-04-13 22:43:14-05 hiroo Exp $';
 my ($VERSION) = $ver =~ m/\s+(\d+\.\d+)\s+/;
 my $VERSION_MESSAGE = <<"EOM";
 TD-6 Roland Percussion Sound Module MIDI Controller
                      Version $VERSION
   with Perl/Tk $Tk::VERSION on $Tk::platform platform
 
-       Copyright (c) 2002 Hiroo Hayashi
+       Copyright (c) 2003 Hiroo Hayashi
                All rights reserved.
 EOM
-
+print "$VERSION_MESSAGE\n";
 # default drum kit
 my $DEFAULT_DRUM_KIT = 99;
 
@@ -64,8 +77,20 @@ my @pads = (
 	   );
 
 # device ID
-my $midi_devId = 0;		# Windows MIDI port device ID
-my $td6_devId = 17;		# default device ID
+my $midiin_portId = 0;		# Windows MIDI port device ID
+my $midiout_portId = 1;		# Windows MIDI port device ID
+my $midi_devId = 17;		# default device ID
+
+if (-f 't/devinfo') {		# for debugging
+    my $midi = new Win32API::MIDI;
+    open(F, 't/devinfo') or die "cannot open 't/dev/info': $!\n";
+    chomp(my $iname = <F>);
+    chomp(my $oname = <F>);
+    chomp($midi_devId = <F>);
+    close F;
+    $midiin_portId = $midi->InGetDevNum($iname);
+    $midiout_portId = $midi->OutGetDevNum($oname);
+}
 
 my $SC_SL = 20;			# scale : sliderlength
 my $SC_WD = 10;			# scale : width
@@ -79,31 +104,14 @@ my $db_dirty = 0;		# dirty flag for Database
 instrument::init();
 
 # read TD6 default setting database
-my $db = read_db($db_file);
+my $db;
+$db = read_db($db_file);
 #foreach (sort keys %{$db}) { printf "%08x: ", $_; datadump($db->{$_}); }
 
 # %dr: hash database for TD6 parameters
 my %dr;
-init_kit_name();
 init_pad_parameters();
-
-########################################################################
-midi_init();
-
-# set default drum kit
-set_setup();
-#td6_dump_request_setup(); sleep 10; exit;
-my $drum_kit = $DEFAULT_DRUM_KIT; # 1-99
-set_kit_parameters($drum_kit, 1);
-#td6_dump_request_drum_kit($drum_kit, 1);
-#print Dumper(%dr); exit;
-
-sub set_kit_parameters {
-    my($kit_name, $init) = @_;
-    set_kit_name($drum_kit);
-    set_common_parameters($drum_kit, $init);
-    set_pad_parameters($drum_kit, $init);
-}
+init_kit_name();
 
 ########################################################################
 #	create Tk GUI
@@ -153,10 +161,45 @@ my $fr_midi_pad	 = $np_top{midi}->Frame;
 
 $np_top{trigger} = $nb_top->add('trigger', -label => 'Trigger');
 
+########################################################################
+# create subwidgets
+########################################################################
+
+$MW->focus;
+$MW->grabGlobal;		# does not work?
+
+# initialize MIDI
+midi_init();
+
+# Setup : Kit Common Data
+# dump request for all setup except Device ID and LCD Contrast
+td6_setup_data_dump_request($MW);
+set_setup();			# set setup variables
 mkwidgets_setup();
+
+# Set up Drum Kit Data
+# set default drum kit
+my $drum_kit = $DEFAULT_DRUM_KIT; # 1-99
+
+sub set_kit_parameters {
+    my($kit_name, $init) = @_;
+    td6_kit_data_dump_request($MW, $drum_kit);
+    set_kit_name($drum_kit);
+    set_common_parameters($drum_kit, $init);
+    set_pad_parameters($drum_kit, $init);
+}
+set_kit_parameters($drum_kit, 1);
+
+print "mkwidgets_drum_kit()\n";
 mkwidgets_drum_kit();
+print "mkwidgets_common($drum_kit)\n";
 mkwidgets_common($drum_kit);
+print "mkwidgets_pads($drum_kit)\n";
 mkwidgets_pads($drum_kit);
+print "done\n";
+$MW->grabRelease;		# does not work?
+
+#print Dumper(%dr); exit;
 
 # pack top frames
 $fr_control->pack(-side => 'left', -anchor => 'nw');
@@ -208,16 +251,6 @@ quit();
 #		+ $np_top{trigger}
 
 ########################################################################
-# MIDI System Excusive Subroutines
-#	should be moved to platform independent Module
-
-# subroutines
-sub checkSum {
-    my $s = 0;
-    $s += $_ foreach (@_);
-    -$s & 0x7F;
-}
-
 # for debug
 sub datadump {
     my ($m) = @_;
@@ -225,39 +258,6 @@ sub datadump {
     foreach (unpack 'C*', $m) { printf "%02x ", $_; }; print ":length $l\n";
 }
 
-sub EXS { 0xf0; };		# Exclusive Status
-sub EOX { 0xf7; };		# EOX: End Of Exclusive
-sub UNM { 0x7e; };		# Universal Non-realtime Meesages
-sub URM { 0x7f; };		# Universal Realtime Messages
-sub BRD { 0x7f; };		# Broadcast Device ID
-
-sub RequestData_RQ1_4B {
-    my ($dev, $address, $size) = @_;
-    $dev--;
-    pack('C6NNC2',
-	 EXS, 0x41,		# 0x41: manufacture ID : Roland
-	 $dev,
-	 0x00, 0x3f,		# Model ID: for TD-6
-	 0x11,			# command ID: RQ1
-	 $address,		# address
-	 $size,			# size
-	 checkSum(unpack 'C*', pack('NN', $address, $size)),
-	 EOX);
-}
-
-sub DataTransfer_DT1_4B {
-    my ($dev, $address, @data) = @_;
-    $dev--;
-    pack('C6NC*',
-	 EXS, 0x41,		# 0x41: manufacture ID : Roland
-	 $dev,
-	 0x00, 0x3f,		# Model ID: for TD-6
-	 0x12,			# command ID: DT1
-	 $address,		# address
-	 @data,
-	 checkSum(unpack('C*', pack('N', $address)), @data),
-	 EOX);
-}
 
 # output SysEX Message
 sub Win32API::MIDI::Out::sysex {
@@ -277,93 +277,276 @@ sub Win32API::MIDI::Out::sysex {
 
 {
     my ($midi, $mo, $mi);
+    my ($buf1, $buf2, $hdr1, $hdr2, $lphdr1, $lphdr2);
+    my $ignore_callback;	# set 1 when closing MIDI In handler
+    my $get_sysex;		# set by callback routine to signal
+    my @data;			# input data buffer
+    my $np;			# # of packet received
+    my $npacket;		# # of packet to be received
+    my $midi_in_done;		# signal completion of data receipt
+    my ($ndata, $cb_debug);	# for MIDI In debugging
+    my $td6;			# MIDI::SysEX object
 
-    END {
-	$mi->Close;
-	$mo->Close;
-    }
+    # Store pointer to our input buffer for System Exclusive messages
+    # in MIDIHDR
+    #sub midi_mkhdr {
+    #	 my ($ptr, $len) = @_;
+    #	 return pack("LLLLLPLL",
+    #		     $ptr,	# lpData
+    #		     $len,	# dwBufferLength
+    #		     0,		# dwBytesRecorded
+    #		     0xBEEF,	# dwUser (not used)
+    #		     0,		# dwFlags must be set to 0
+    #		     undef,	# lpNext
+    #		     0,		# reserved
+    #		     0);		# dwOffset
+    #}
 
     sub midi_init {
-	# open MIDI device
 	use Win32API::MIDI qw( /^(MIM_)/ );
+	use Win32API::MIDI::SysEX::Roland;
+	use Tie::Watch;		# included in Perl/Tk
+
+	# system exclusive message
+	$td6 = new Win32API::MIDI::SysEX::Roland(modelName => 'TD-6',
+						 deviceID => $midi_devId);
+	# open MIDI device
 	$midi = new Win32API::MIDI;
 	# MIDI Out
-	$mo = new Win32API::MIDI::Out($midi_devId)
+	$mo = new Win32API::MIDI::Out($midiout_portId)
 	    or die $midi->OutGetErrorText();
 
 	# MIDI In
-	$mi = new Win32API::MIDI::In($midi_devId, \&midi_in_callback, 0xDEAD)
+	$ignore_callback = 0;
+	$mi = new Win32API::MIDI::In($midiin_portId, \&midiCallback, 0xDEAD)
 	    or die $midi->InGetErrorText();
-	my $buf = "\0" x 1024;
-	my $midihdr = pack ("PLLLLPLL",
-			    $buf, # lpData
-			    length $buf, # dwBufferLength
-			    0,	# dwBytesRecorded
-			    0xBEEF, # dwUser
-			    0,	# dwFlags
-			    undef, # lpNext
-			    0,	# reserved
-			    0);	# dwOffset
-	my $lpMidiInHdr = unpack('L!', pack('P', $midihdr));
-	$mi->PrepareHeader($lpMidiInHdr)
-	    or die $mi->GetErrorText();
-	$mi->AddBuffer($lpMidiInHdr)
-	    or die $mi->GetErrorText();
-	#$mi->Start or die $mi->GetErrorText();
+
+	# MIDI input buffer 1
+	$buf1 = "\x00" x 256;
+	$hdr1 = pack("LLLLLPLL",
+    		     unpack('L!', pack('P',$buf1)),
+    		     length $buf1,
+    		     0, 0, 0, undef, 0, 0);
+	$lphdr1 = unpack('L!', pack('P', $hdr1));
+	$mi->PrepareHeader($lphdr1)	or die $mi->GetErrorText();
+	$mi->AddBuffer($lphdr1)		or die $mi->GetErrorText();
+
+	printf("lphdr1: 0x%08x, buf1: 0x%08x\n",
+	       $lphdr1, unpack('L!', pack('P', $buf1)));
+
+	# MIDI input buffer 2
+	$buf2 = "\x00" x 256;
+	$hdr2 = pack("LLLLLPLL",
+    		     unpack('L!', pack('P',$buf2)),
+    		     length $buf2,
+    		     0, 0, 0, undef, 0, 0);
+	$lphdr2 = unpack('L!', pack('P', $hdr2));
+	$mi->PrepareHeader($lphdr2)	or die $mi->GetErrorText();
+	$mi->AddBuffer($lphdr2)		or die $mi->GetErrorText();
+
+	printf("lphdr2: 0x%08x, buf2: 0x%08x\n",
+	       $lphdr2, unpack('L!', pack('P', $buf2)));
+
+	# Let copy_buf_data() be invoked when callback handler receives data.
+	Tie::Watch->new
+	      (
+	       -variable	=> \$get_sysex,
+	       -store		=> \&copy_buf_data,
+	      );
+	$mi->Start or die $mi->GetErrorText();
+	$ndata = 0;
+    }
+    END {
+	# Without this line, midiInReset() hangs!
+	$ignore_callback = 1;
+	if (defined $mi) {
+	    # Stop recording
+	    $mi->Stop()		or die $mi->GetErrorText();
+	    $mi->Reset()	or die $mi->GetErrorText();
+	    $mi->Close()	or die $mi->GetErrorText();
+	    # Unprepare the buffer and MIDIHDR.
+	    # You must use this function before freeing the buffer.
+	    $mi->UnprepareHeader($lphdr1);
+	    $mi->UnprepareHeader($lphdr2);
+	}
+	if (defined $mo) {
+	    $mo->Close()	or die $mo->GetErrorText();
+	}
     }
     sub td6_midi_out {
 	my ($address, $data) = @_;
-	$mo->sysex(DataTransfer_DT1_4B($td6_devId, $address, unpack('C*', $data)));
+	$mo->sysex($td6->DT1($address, $data));
 	$db_dirty = 1;		# mark dirty
     }
 
-    sub td6_dump_request_setup {
-	$mo->sysex(RequestData_RQ1_4B($td6_devId, 0x40000000, 0));
+    # Callback handler have to return as early as possible.
+    sub midiCallback {
+	my ($handle, $uMsg, $dwInstance, $dwParam1, $dwParam2) = @_;
+	# ignore Timing Clock message (System Real Time Messages)
+	return if ($uMsg == MIM_DATA and $dwParam1 == 0xf8);
+
+	# Don't call MIDI functions when MIDI-In hanlder is closing.
+	return if $ignore_callback;
+
+	printf("midiCallback: %p, %x, %x, %x, %x\n",
+	       $handle, $uMsg, $dwInstance, $dwParam1, $dwParam2) if $cb_debug;
+
+	if ($uMsg == MIM_LONGDATA) {
+	    printf("MIM_LONGDATA:\n") if $cb_debug;
+	    $get_sysex = [ $handle, $dwInstance, $dwParam1, $dwParam2 ];
+	} else {
+	    # Ignore other type of messages, MIM_OPEN, MIM_CLOSE,
+	    # MIM_ERROR, MIM_LONGERROR, MIM_MOREDATA, or MIM_DATA.
+	    printf("[%d]\n", $uMsg) if $cb_debug;
+	}
     }
 
-    sub td6_dump_request_drum_kit {
-	my ($drum_kit) = @_;
+    ########################################################################
+    # When $get_sysex is updated, push received data into @data, then
+    # queue the input buffer again.
+    sub copy_buf_data {
+	my($self, $new_val) = @_;
+	my ($handle, $dwInstance, $dwParam1, $dwParam2) = @{$new_val};
+
+	my $midihdr = unpack('P32', pack('L!', $dwParam1));
+	my $bytesrecorded = (unpack('LL4LL2', $midihdr))[2];
+
+	push(@data, unpack("P$bytesrecorded", $midihdr));
+
+	# Queue the MIDIHDR for more input
+	$handle->PrepareHeader($dwParam1) or die $handle->GetErrorText();
+	$handle->AddBuffer($dwParam1)	  or die $handle->GetErrorText();
+
+	# signal when all data is received
+	$midi_in_done = 1 if (++$np == $npacket);
+	print "[$np,$midi_in_done]\n" if $np == $npacket;
+
+	# for debugging
+	$ndata += $bytesrecorded;
+	#print ".";
+	#print "[$np,$midi_in_done]";
+    }
+
+    sub midi_req_bulk_dump {
+	my ($self, $sysex, $npkt, $timeout) = @_;
+	$npacket = $npkt;
+	$np = 0; $midi_in_done = 0;
+	# timeout after $timeout/1000 seconds
+	my $tid = $self->after($timeout,
+			       sub {
+				   print STDERR "timeout\n";
+				   undef $midi_in_done;
+			       });
+	# without this line waitVariable never finishes when window closed.
+	$self->OnDestroy(sub { undef $midi_in_done; });
+	# request data
+	$mo->sysex($sysex);
+	# wait for data
+	$self->waitVariable(\$midi_in_done);
+	$self->afterCancel($tid);
+	return $midi_in_done;
+    }
+    sub td6_process_dump_data {
+	foreach (@data) {
+	    #datadump($_);
+	    my ($prefix, $address, $data) = unpack('a6Na*', $_);
+	    #my ($prefix, $data) = unpack('a5a*', $_); my $address=0;
+	    if (ord(chop($data)) != 0xf7) {
+		print STDERR "unexpected data: without EOX (f7)\n";
+		datadump($_);
+		next;
+	    }
+	    my $dev = chr($midi_devId - 1);
+	    # EXS, Roland, devId, GS, DT1
+	    #if ($prefix ne "\xf0\x41${dev}\x42\x12") {
+	    # EXS, Roland, devId, TD-6, DT1
+	    if ($prefix ne "\xf0\x41${dev}\x00\x3f\x12") {
+		print STDERR "unexpected data: prefix error\n";
+		datadump($prefix);
+		next;
+	    }
+	    #		chop $data;	# force check sum error
+	    #		if (checkSum(unpack('C*', $data))) {
+	    if ($td6->checkSum(unpack('C*', pack('N', $address)),
+			       unpack('C*', $data))) {
+		print STDERR "check sum error\n";
+		datadump($_);
+	    }
+	    #printf "%08x\n", $address;
+	    next if $address < 0x40000000; # ignore user song
+	    if ($address & 0xff) { # sanity check
+		printf "%08x\n", $address;
+		die "td6: unexpected address\n"
+	    }
+	    $db->{$address & 0xfffffff} = $data;
+	}
+	@data = ();		# clean up @data
+    }
+
+    sub td6_setup_data_dump_request {
+	my ($MW) = @_;
+	my $req = $td6->RQ1(0x40000000, 0);
+	if (defined midi_req_bulk_dump($MW, $req, 71, 10000)) {
+	    td6_process_dump_data();
+	} else {
+	    print STDERR "td6_kit_data_dump_requeset: timeout error\n";
+	    print STDERR "$ndata,$np\n";
+	}
+    }
+
+    sub td6_kit_data_dump_request {
+	my ($MW, $drum_kit) = @_;
 	die "internal error \$drum_kit = $drum_kit"
 	    if ($drum_kit < 1 or $drum_kit > 99);
-	$mo->sysex(RequestData_RQ1_4B($td6_devId,
-				      0x41000000 | ($drum_kit - 1) << 16,
-				      0));
-    }
-}
-sub midi_in_callback {
-    my ($self, $msg, $instance, $param1, $param2) = @_;
-    # ignore Timing Clock message (System Real Time Messages)
-    return ($msg == MIM_DATA and $param1 == 0xf8);
-    printf "<<<0x%x,0x%x,0x%x,0x%x>>>\n", $msg, $instance, $param1, $param2;
-    if ($msg == MIM_OPEN) {
-	print "MIM_OPEN\n";
-    } elsif ($msg == MIM_CLOSE) {
-	print "MIM_CLOSE\n";
-    } elsif ($msg == MIM_ERROR) {
-	print "MIM_ERROR\n";
-    } elsif ($msg == MIM_DATA) {
-	print "MIM_DATA\n";
-    } elsif ($msg == MIM_LONGDATA) {
-	my $midiHdr = unpack('P32', pack('L!', $param1));
-	my @d = unpack('LL4LL2', $midiHdr);
-	my $d = unpack("P$d[2]", $midiHdr);
-	my $d_len = $d[2] - (2+4+1+1);
-	my @x = unpack("nNNC${d_len}CC", $d);
-	if ($x[0] == 0xf041
-	    and $x[1] == ($td6_devId - 1) << 24 | 0x3f12) {
-	    printf "address:0x%08x\n", $x[2];
+	my $address = 0x41000000 | ($drum_kit - 1) << 16;
+	my $req = $td6->RQ1($address, 0);
+	if (defined midi_req_bulk_dump($MW, $req, 13, 10000)) {
+	    td6_process_dump_data();
 	} else {
-	    print "MIM_LONGDATA\n";
-	    printf "lpData:%x,Buflen:%x,bytesrecorded:%d,dwUser:%x,dwFlags:%d\n",
-		@d[0..4];
-	    datadump($d);
+	    print STDERR "td6_kit_data_dump_requeset: timeout error\n";
+	    print STDERR "$ndata,$np\n";
 	}
-    } elsif ($msg == MIM_LONGERROR) {
-	print "MIM_LONGERROR\n";
-    } else {
-	print "unknown message type\n";
+    }
+
+    # for debugging (or SC-55mkII windows may be added?)
+    sub sc55_data_dump_request {
+	my ($MW) = @_;
+	my $sc55 = new Win32API::MIDI::SysEX::Roland(modelName => 'gs',
+						     devideID => $midi_devId);
+	my $req = $sc55->RQ1(0x480000, 0x1d10); # all
+	#my $req = $sc55->RQ1(0x480000, 0x10); # sys parm
+	#my $req = $sc55->RQ1(0x41024b, 0x01); # manual ex.2
+	#datadump($req);
+	if (defined midi_req_bulk_dump($MW, $req, 30, 5000)) {
+	    print "$ndata,$np\n";
+	    dump_data();
+	    @data = ();
+	    #sc55_process_dump_data();
+	} else {
+	    print STDERR "sc55_data_dump_requeset: timeout error\n";
+	    print STDERR "$ndata,$np\n";
+	}
+    }
+
+    # for debugging
+    sub dump_data {
+	foreach my $d (@data) {
+	    my $bytes = 16;
+	    foreach (unpack('C*', $d)) {
+		if (!(--$bytes)) {
+		    printf("%02X\n", $_);
+		    $bytes = 16;
+		} else {
+		    printf("%02X ", $_);
+		}
+	    }
+	    print "\n" unless $bytes == 16;
+	    print '-' x 48, "\n";
+	}
     }
 }
+
+########################################################################
 
 sub read_db {
     my ($fname) = @_;
@@ -393,10 +576,8 @@ sub write_db {
     $/ = "\xf7";
     foreach (sort {$a <=> $b} keys %{$db}) {
 	# reculculate check sum
-	my $d = DataTransfer_DT1_4B($td6_devId, 0x40000000 + $_,
-				    unpack('C*', $db->{$_}));
-#	printf "%x\n", $_;
-	print F $d;
+#	my $d = $td6->DT1(0x40000000 + $_, $db->{$_});
+#	print F $d;
     }
     close(F);
     $db_dirty = 0;		# mark clean
@@ -569,7 +750,7 @@ sub Tk::LabScale {
     }
     sub mkwidgets_setup {
 	my $w;			# for balloon
-	# Part 1-4, Parc, Kit Tx/Rx Channel (1-16,off)
+	# Part 1-4, Parc, Kit Tx/Rx Channel (1-16,off) !!!FIXIT!!!
 
 	# Note Chase on/off
 	$w = $fr_midi_cmn->Checkbutton
@@ -788,7 +969,7 @@ sub dk_p_offset {
     sub init_kit_name {
 	# make a list of kit name
 	for (1..99) {
-	    my $name = get_str(dk_c_offset($_, 0x0), 8);
+	    my $name = "kit $_"; #get_str(dk_c_offset($_, 0x0), 8);
 	    $kit_name[$_-1] = $name; # BrowseEntry assumes base index is `0'.
 	    $kit_num{$name} = $_;
 	}

@@ -1,7 +1,7 @@
 /*
  *	MIDI.xs --- Windows 32bit MIDI API Wrapper Module
  *
- *	$Id: API.xs,v 1.8 2002-09-30 00:10:07-05 hiroo Exp $
+ *	$Id: MIDI.xs,v 1.10 2003-03-18 01:05:51-05 hiroo Exp $
  *
  *	Copyright (c) 2002 Hiroo Hayashi.  All rights reserved.
  *
@@ -59,10 +59,14 @@ midiInProc_wrapper(hMidiIn, wMsg, dwInstance, dwParam1, dwParam2)
 	   p->lpNext, p->reserved,
 	   p->dwOffset);
   }
+  if (dwParam1) {
+    MIDIHDR *p = (MIDIHDR *)dwParam1;
+    printf("%p, %lx\n", p->lpData, p->dwBufferLength);
+  }
 #endif
   if (hMidiIn) {
     SV* rv = sv_newmortal();
-    sv_setref_pv(rv, "Win32::MIDI::API::In", hMidiIn);
+    sv_setref_pv(rv, "Win32API::MIDI::In", hMidiIn);
     XPUSHs(rv);
   } else {
     XPUSHs(&PL_sv_undef);
@@ -84,7 +88,7 @@ midiInProc_wrapper(hMidiIn, wMsg, dwInstance, dwParam1, dwParam2)
 
 
 /*MODULE = Win32::MIDI	PACKAGE = Win32::MIDI	PREFIX = midi*/
-MODULE = Win32::MIDI::API	PACKAGE = Win32::MIDI::API
+MODULE = Win32API::MIDI	PACKAGE = Win32API::MIDI
 
 double
 constant(sv,arg)
@@ -236,7 +240,7 @@ midiDisconnect(HMIDI hMidi, HMIDIOUT hmo)
 
 
 ########################################################################
-MODULE = Win32::MIDI::API	PACKAGE = Win32::MIDI::API::In	PREFIX = midiIn
+MODULE = Win32API::MIDI	PACKAGE = Win32API::MIDI::In	PREFIX = midiIn
 =pod
  # Opening and Closing Device Drivers
 MMRESULT midiInOpen(
@@ -263,6 +267,11 @@ midiInOpen(unsigned int uDeviceID, \
     CODE:
 	{
 	  switch (dwFlags) {
+	  case CALLBACK_NULL:	/* For what this is? */
+	    mmsyserr = midiInOpen(&h, uDeviceID,
+				  (DWORD_PTR)NULL, (DWORD_PTR)NULL, dwFlags);
+	    RETVAL = mmsyserr == MMSYSERR_NOERROR ? h : NULL;
+	    break;
 	  case CALLBACK_FUNCTION:
 	    if (SvTRUE(dwCallback)) {
 	      if (midiInProc) {
@@ -332,6 +341,21 @@ midiInPrepareHeader(HMIDIIN hmi, LPMIDIHDR lpMidiInHdr)
     C_ARGS:
 	hmi, lpMidiInHdr, sizeof(MIDIHDR)
 
+=pod
+MMRESULT
+midiInPrepareHeader(HMIDIIN hmi, LPMIDIHDR lpMidiInHdr)
+    PROTOTYPE: $$
+    CODE:
+	{
+	  LPMIDIHDR p = lpMidiInHdr;
+	  printf("midiInPrepareHeader: %p,%p,%4s,%x,%x,%x\n",
+		 p, p->lpData, p->lpData,
+		 p->dwBufferLength, p->dwBytesRecorded,
+		 p->dwUser);
+	  RETVAL = midiInPrepareHeader(hmi, lpMidiInHdr, sizeof(MIDIHDR));
+	}
+=cut
+
 MMRESULT
 midiInUnprepareHeader(HMIDIIN hmi, LPMIDIHDR lpMidiInHdr)
     PROTOTYPE: $$
@@ -392,7 +416,7 @@ midiInGetID(HMIDIIN hmi)
 
 
 ########################################################################
-MODULE = Win32::MIDI::API	PACKAGE = Win32::MIDI::API::Out	PREFIX = midiOut
+MODULE = Win32API::MIDI	PACKAGE = Win32API::MIDI::Out	PREFIX = midiOut
 =pod
 # Opening and Closing Device Drivers
 MMRESULT midiOutOpen(
@@ -554,7 +578,7 @@ midiOutGetID(HMIDIOUT hmo)
 
 
 ########################################################################
-MODULE = Win32::MIDI::API	PACKAGE = Win32::MIDI::API::Stream	PREFIX = midiStream
+MODULE = Win32API::MIDI	PACKAGE = Win32API::MIDI::Stream	PREFIX = midiStream
 =pod
 midiStreamOpen
 MMRESULT midiStreamOpen(

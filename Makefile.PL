@@ -1,4 +1,4 @@
-#	 $Id: Makefile.PL,v 1.3 2002-10-12 23:59:37-05 hiroo Exp $
+#	 $Id: Makefile.PL,v 1.4 2003-03-18 01:04:23-05 hiroo Exp $
 #
 #	 Copyright (c) 2002 Hiroo Hayashi.  All rights reserved.
 #
@@ -15,7 +15,8 @@ WriteMakefile(
     ($] >= 5.005 ?    ## Add these new keywords supported since 5.005
       (ABSTRACT_FROM => 'MIDI.pm', # retrieve abstract from module
        AUTHOR     => 'Hiroo Hayashi <hiroo.hayashi@computer.org>') : ()),
-    'LIBS'		=> ['-L/usr/lib/w32api -lwinmm'], # e.g., '-lm'
+    'LIBS'		=> ($^O =~ /cygwin/i ?
+			    ['-L/usr/lib/w32api -lwinmm'] : []), # e.g., '-lm'
     'DEFINE'		=> '', # e.g., '-DHAVE_SOMETHING'
 	# Insert -I. if you add *.h files later:
     'INC'		=> '', # e.g., '-I/usr/include/other'
